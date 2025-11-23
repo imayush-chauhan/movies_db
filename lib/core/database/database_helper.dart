@@ -1,309 +1,347 @@
-import 'package:path/path.dart';
-import 'package:sqflite/sqflite.dart';
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-import '../constants/api_constants.dart';
 import '../models/movie.dart';
 
 class DatabaseHelper {
-  static Database? _database;
-  static const String _dbName = DbConstants.databaseName;
-  static const int _dbVersion = DbConstants.databaseVersion;
+  static SharedPreferences? _prefs;
 
-  Future<Database> get database async {
-    _database ??= await _initDatabase();
-    return _database!;
+  // Keys for SharedPreferences
+  static const String _moviesKey = 'movies_cache';
+  static const String _trendingKey = 'trending_movies';
+  static const String _nowPlayingKey = 'now_playing_movies';
+  static const String _bookmarksKey = 'bookmarked_movies';
+
+  Future<SharedPreferences> get _preferences async {
+    _prefs ??= await SharedPreferences.getInstance();
+    return _prefs!;
   }
 
-  Future<Database> _initDatabase() async {
-    final dbPath = await getDatabasesPath();
-    final path = join(dbPath, _dbName);
+  // ==================== Helper Methods ====================
 
-    return await openDatabase(
-      path,
-      version: _dbVersion,
-      onCreate: _onCreate,
-      onUpgrade: _onUpgrade,
-    );
-  }
+  Future<Map<int, Movie>> _getAllMoviesMap() async {
+    try {
+      final prefs = await _preferences;
+      final String? moviesJson = prefs.getString(_moviesKey);
 
-  Future<void> _onCreate(Database db, int version) async {
-    // Movies table - stores all movie data
-    await db.execute('''
-      CREATE TABLE ${DbConstants.moviesTable} (
-        id INTEGER PRIMARY KEY,
-        title TEXT,
-        original_title TEXT,
-        overview TEXT,
-        poster_path TEXT,
-        backdrop_path TEXT,
-        release_date TEXT,
-        vote_average REAL,
-        vote_count INTEGER,
-        popularity REAL,
-        original_language TEXT,
-        adult INTEGER,
-        video INTEGER,
-        is_bookmarked INTEGER DEFAULT 0,
-        updated_at INTEGER
-      )
-    ''');
+      if (moviesJson == null || moviesJson.isEmpty) {
+        return {};
+      }
 
-    // Trending movies junction table
-    await db.execute('''
-      CREATE TABLE ${DbConstants.trendingTable} (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        movie_id INTEGER,
-        position INTEGER,
-        FOREIGN KEY (movie_id) REFERENCES ${DbConstants.moviesTable}(id)
-      )
-    ''');
+      final Map<String, dynamic> decoded = jsonDecode(moviesJson);
+      final Map<int, Movie> movies = {};
 
-    // Now playing movies junction table
-    await db.execute('''
-      CREATE TABLE ${DbConstants.nowPlayingTable} (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        movie_id INTEGER,
-        position INTEGER,
-        FOREIGN KEY (movie_id) REFERENCES ${DbConstants.moviesTable}(id)
-      )
-    ''');
+      decoded.forEach((key, value) {
+        final movie = Movie.fromJson(value as Map<String, dynamic>);
+        movies[int.parse(key)] = movie;
+      });
 
-    // Bookmarks table
-    await db.execute('''
-      CREATE TABLE ${DbConstants.bookmarksTable} (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        movie_id INTEGER UNIQUE,
-        bookmarked_at INTEGER,
-        FOREIGN KEY (movie_id) REFERENCES ${DbConstants.moviesTable}(id)
-      )
-    ''');
-
-    // Create indexes for better query performance
-    await db.execute(
-        'CREATE INDEX idx_movies_id ON ${DbConstants.moviesTable}(id)');
-    await db.execute(
-        'CREATE INDEX idx_trending_movie ON ${DbConstants.trendingTable}(movie_id)');
-    await db.execute(
-        'CREATE INDEX idx_nowplaying_movie ON ${DbConstants.nowPlayingTable}(movie_id)');
-    await db.execute(
-        'CREATE INDEX idx_bookmarks_movie ON ${DbConstants.bookmarksTable}(movie_id)');
-  }
-
-  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // Handle database migrations here
-    if (oldVersion < newVersion) {
-      // Drop and recreate tables for simplicity
-      await db.execute('DROP TABLE IF EXISTS ${DbConstants.trendingTable}');
-      await db.execute('DROP TABLE IF EXISTS ${DbConstants.nowPlayingTable}');
-      await db.execute('DROP TABLE IF EXISTS ${DbConstants.bookmarksTable}');
-      await db.execute('DROP TABLE IF EXISTS ${DbConstants.moviesTable}');
-      await _onCreate(db, newVersion);
+      return movies;
+    } catch (e) {
+      debugPrint('Error getting movies map: $e');
+      return {};
     }
+  }
+
+  Future<void> _saveAllMoviesMap(Map<int, Movie> movies) async {
+    try {
+      final prefs = await _preferences;
+      final Map<String, dynamic> toSave = {};
+
+      movies.forEach((key, value) {
+        toSave[key.toString()] = value.toJson();
+      });
+
+      await prefs.setString(_moviesKey, jsonEncode(toSave));
+    } catch (e) {
+      debugPrint('Error saving movies map: $e');
+    }
+  }
+
+  Future<List<int>> _getIdList(String key) async {
+    try {
+      final prefs = await _preferences;
+      final String? idsJson = prefs.getString(key);
+
+      if (idsJson == null || idsJson.isEmpty) {
+        return [];
+      }
+
+      final List<dynamic> decoded = jsonDecode(idsJson);
+      return decoded.map((e) => e as int).toList();
+    } catch (e) {
+      debugPrint('Error getting id list for $key: $e');
+      return [];
+    }
+  }
+
+  Future<void> _saveIdList(String key, List<int> ids) async {
+    try {
+      final prefs = await _preferences;
+      await prefs.setString(key, jsonEncode(ids));
+    } catch (e) {
+      debugPrint('Error saving id list for $key: $e');
+    }
+  }
+
+  Future<Set<int>> _getBookmarkIds() async {
+    final ids = await _getIdList(_bookmarksKey);
+    return ids.toSet();
   }
 
   // ==================== Movie Operations ====================
 
   Future<void> insertMovie(Movie movie) async {
-    final db = await database;
-    await db.insert(
-      DbConstants.moviesTable,
-      {...movie.toDb(), 'updated_at': DateTime.now().millisecondsSinceEpoch},
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    try {
+      final movies = await _getAllMoviesMap();
+      movies[movie.id] = movie;
+      await _saveAllMoviesMap(movies);
+    } catch (e) {
+      debugPrint('Error inserting movie: $e');
+    }
   }
 
-  Future<void> insertMovies(List<Movie> movies) async {
-    final db = await database;
-    final batch = db.batch();
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
+  Future<void> insertMovies(List<Movie> moviesList) async {
+    try {
+      final movies = await _getAllMoviesMap();
 
-    for (final movie in movies) {
-      batch.insert(
-        DbConstants.moviesTable,
-        {...movie.toDb(), 'updated_at': timestamp},
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      for (final movie in moviesList) {
+        movies[movie.id] = movie;
+      }
+
+      await _saveAllMoviesMap(movies);
+    } catch (e) {
+      debugPrint('Error inserting movies: $e');
     }
-
-    await batch.commit(noResult: true);
   }
 
   Future<Movie?> getMovie(int id) async {
-    final db = await database;
-    final maps = await db.query(
-      DbConstants.moviesTable,
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    try {
+      final movies = await _getAllMoviesMap();
+      final movie = movies[id];
 
-    if (maps.isEmpty) return null;
-    return Movie.fromDb(maps.first);
+      if (movie != null) {
+        final bookmarkIds = await _getBookmarkIds();
+        return movie.copyWith(isBookmarked: bookmarkIds.contains(id));
+      }
+
+      return null;
+    } catch (e) {
+      debugPrint('Error getting movie: $e');
+      return null;
+    }
   }
 
   // ==================== Trending Movies ====================
 
   Future<void> saveTrendingMovies(List<Movie> movies) async {
-    final db = await database;
+    try {
+      // Insert movies first
+      await insertMovies(movies);
 
-    // Insert movies first
-    await insertMovies(movies);
-
-    // Clear old trending data
-    await db.delete(DbConstants.trendingTable);
-
-    // Insert trending references
-    final batch = db.batch();
-    for (var i = 0; i < movies.length; i++) {
-      batch.insert(DbConstants.trendingTable, {
-        'movie_id': movies[i].id,
-        'position': i,
-      });
+      // Save trending IDs in order
+      final ids = movies.map((m) => m.id).toList();
+      await _saveIdList(_trendingKey, ids);
+    } catch (e) {
+      debugPrint('Error saving trending movies: $e');
     }
-    await batch.commit(noResult: true);
   }
 
   Future<List<Movie>> getTrendingMovies() async {
-    final db = await database;
-    final result = await db.rawQuery('''
-      SELECT m.*, 
-             CASE WHEN b.movie_id IS NOT NULL THEN 1 ELSE 0 END as is_bookmarked
-      FROM ${DbConstants.moviesTable} m
-      INNER JOIN ${DbConstants.trendingTable} t ON m.id = t.movie_id
-      LEFT JOIN ${DbConstants.bookmarksTable} b ON m.id = b.movie_id
-      ORDER BY t.position ASC
-    ''');
+    try {
+      final trendingIds = await _getIdList(_trendingKey);
 
-    return result.map((map) => Movie.fromDb(map)).toList();
+      if (trendingIds.isEmpty) {
+        return [];
+      }
+
+      final allMovies = await _getAllMoviesMap();
+      final bookmarkIds = await _getBookmarkIds();
+
+      final List<Movie> result = [];
+
+      for (final id in trendingIds) {
+        final movie = allMovies[id];
+        if (movie != null) {
+          result.add(movie.copyWith(isBookmarked: bookmarkIds.contains(id)));
+        }
+      }
+
+      return result;
+    } catch (e) {
+      debugPrint('Error getting trending movies: $e');
+      return [];
+    }
   }
 
   // ==================== Now Playing Movies ====================
 
   Future<void> saveNowPlayingMovies(List<Movie> movies) async {
-    final db = await database;
+    try {
+      // Insert movies first
+      await insertMovies(movies);
 
-    // Insert movies first
-    await insertMovies(movies);
-
-    // Clear old now playing data
-    await db.delete(DbConstants.nowPlayingTable);
-
-    // Insert now playing references
-    final batch = db.batch();
-    for (var i = 0; i < movies.length; i++) {
-      batch.insert(DbConstants.nowPlayingTable, {
-        'movie_id': movies[i].id,
-        'position': i,
-      });
+      // Save now playing IDs in order
+      final ids = movies.map((m) => m.id).toList();
+      await _saveIdList(_nowPlayingKey, ids);
+    } catch (e) {
+      debugPrint('Error saving now playing movies: $e');
     }
-    await batch.commit(noResult: true);
   }
 
   Future<List<Movie>> getNowPlayingMovies() async {
-    final db = await database;
-    final result = await db.rawQuery('''
-      SELECT m.*, 
-             CASE WHEN b.movie_id IS NOT NULL THEN 1 ELSE 0 END as is_bookmarked
-      FROM ${DbConstants.moviesTable} m
-      INNER JOIN ${DbConstants.nowPlayingTable} np ON m.id = np.movie_id
-      LEFT JOIN ${DbConstants.bookmarksTable} b ON m.id = b.movie_id
-      ORDER BY np.position ASC
-    ''');
+    try {
+      final nowPlayingIds = await _getIdList(_nowPlayingKey);
 
-    return result.map((map) => Movie.fromDb(map)).toList();
+      if (nowPlayingIds.isEmpty) {
+        return [];
+      }
+
+      final allMovies = await _getAllMoviesMap();
+      final bookmarkIds = await _getBookmarkIds();
+
+      final List<Movie> result = [];
+
+      for (final id in nowPlayingIds) {
+        final movie = allMovies[id];
+        if (movie != null) {
+          result.add(movie.copyWith(isBookmarked: bookmarkIds.contains(id)));
+        }
+      }
+
+      return result;
+    } catch (e) {
+      debugPrint('Error getting now playing movies: $e');
+      return [];
+    }
   }
 
   // ==================== Bookmark Operations ====================
 
   Future<void> addBookmark(int movieId) async {
-    final db = await database;
-    await db.insert(
-      DbConstants.bookmarksTable,
-      {
-        'movie_id': movieId,
-        'bookmarked_at': DateTime.now().millisecondsSinceEpoch,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    try {
+      final bookmarkIds = (await _getIdList(_bookmarksKey)).toList();
 
-    // Update movie bookmark status
-    await db.update(
-      DbConstants.moviesTable,
-      {'is_bookmarked': 1},
-      where: 'id = ?',
-      whereArgs: [movieId],
-    );
+      if (!bookmarkIds.contains(movieId)) {
+        bookmarkIds.insert(0, movieId); // Add to beginning
+        await _saveIdList(_bookmarksKey, bookmarkIds);
+      }
+
+      // Update movie's bookmark status
+      final movies = await _getAllMoviesMap();
+      if (movies.containsKey(movieId)) {
+        movies[movieId] = movies[movieId]!.copyWith(isBookmarked: true);
+        await _saveAllMoviesMap(movies);
+      }
+    } catch (e) {
+      debugPrint('Error adding bookmark: $e');
+    }
   }
 
   Future<void> removeBookmark(int movieId) async {
-    final db = await database;
-    await db.delete(
-      DbConstants.bookmarksTable,
-      where: 'movie_id = ?',
-      whereArgs: [movieId],
-    );
+    try {
+      final bookmarkIds = (await _getIdList(_bookmarksKey)).toList();
+      bookmarkIds.remove(movieId);
+      await _saveIdList(_bookmarksKey, bookmarkIds);
 
-    // Update movie bookmark status
-    await db.update(
-      DbConstants.moviesTable,
-      {'is_bookmarked': 0},
-      where: 'id = ?',
-      whereArgs: [movieId],
-    );
+      // Update movie's bookmark status
+      final movies = await _getAllMoviesMap();
+      if (movies.containsKey(movieId)) {
+        movies[movieId] = movies[movieId]!.copyWith(isBookmarked: false);
+        await _saveAllMoviesMap(movies);
+      }
+    } catch (e) {
+      debugPrint('Error removing bookmark: $e');
+    }
   }
 
   Future<bool> isBookmarked(int movieId) async {
-    final db = await database;
-    final result = await db.query(
-      DbConstants.bookmarksTable,
-      where: 'movie_id = ?',
-      whereArgs: [movieId],
-    );
-    return result.isNotEmpty;
+    try {
+      final bookmarkIds = await _getBookmarkIds();
+      return bookmarkIds.contains(movieId);
+    } catch (e) {
+      debugPrint('Error checking bookmark: $e');
+      return false;
+    }
   }
 
   Future<List<Movie>> getBookmarkedMovies() async {
-    final db = await database;
-    final result = await db.rawQuery('''
-      SELECT m.*, 1 as is_bookmarked
-      FROM ${DbConstants.moviesTable} m
-      INNER JOIN ${DbConstants.bookmarksTable} b ON m.id = b.movie_id
-      ORDER BY b.bookmarked_at DESC
-    ''');
+    try {
+      final bookmarkIds = await _getIdList(_bookmarksKey);
 
-    return result.map((map) => Movie.fromDb(map)).toList();
+      if (bookmarkIds.isEmpty) {
+        return [];
+      }
+
+      final allMovies = await _getAllMoviesMap();
+
+      final List<Movie> result = [];
+
+      for (final id in bookmarkIds) {
+        final movie = allMovies[id];
+        if (movie != null) {
+          result.add(movie.copyWith(isBookmarked: true));
+        }
+      }
+
+      return result;
+    } catch (e) {
+      debugPrint('Error getting bookmarked movies: $e');
+      return [];
+    }
   }
 
   // ==================== Search ====================
 
   Future<List<Movie>> searchMoviesLocally(String query) async {
-    final db = await database;
-    final searchTerm = '%$query%';
-    final result = await db.rawQuery('''
-      SELECT m.*, 
-             CASE WHEN b.movie_id IS NOT NULL THEN 1 ELSE 0 END as is_bookmarked
-      FROM ${DbConstants.moviesTable} m
-      LEFT JOIN ${DbConstants.bookmarksTable} b ON m.id = b.movie_id
-      WHERE m.title LIKE ? OR m.original_title LIKE ?
-      ORDER BY m.popularity DESC
-      LIMIT 50
-    ''', [searchTerm, searchTerm]);
+    try {
+      if (query.isEmpty) {
+        return [];
+      }
 
-    return result.map((map) => Movie.fromDb(map)).toList();
+      final allMovies = await _getAllMoviesMap();
+      final bookmarkIds = await _getBookmarkIds();
+      final queryLower = query.toLowerCase();
+
+      final List<Movie> results = [];
+
+      allMovies.forEach((id, movie) {
+        final title = movie.title?.toLowerCase() ?? '';
+        final originalTitle = movie.originalTitle?.toLowerCase() ?? '';
+
+        if (title.contains(queryLower) || originalTitle.contains(queryLower)) {
+          results.add(movie.copyWith(isBookmarked: bookmarkIds.contains(id)));
+        }
+      });
+
+      // Sort by popularity
+      results.sort((a, b) => (b.popularity ?? 0).compareTo(a.popularity ?? 0));
+
+      // Limit to 50 results
+      return results.take(50).toList();
+    } catch (e) {
+      debugPrint('Error searching movies locally: $e');
+      return [];
+    }
   }
 
   // ==================== Utility ====================
 
   Future<void> clearAllData() async {
-    final db = await database;
-    await db.delete(DbConstants.trendingTable);
-    await db.delete(DbConstants.nowPlayingTable);
-    await db.delete(DbConstants.bookmarksTable);
-    await db.delete(DbConstants.moviesTable);
+    try {
+      final prefs = await _preferences;
+      await prefs.remove(_moviesKey);
+      await prefs.remove(_trendingKey);
+      await prefs.remove(_nowPlayingKey);
+      await prefs.remove(_bookmarksKey);
+    } catch (e) {
+      debugPrint('Error clearing data: $e');
+    }
   }
 
   Future<void> close() async {
-    final db = await database;
-    await db.close();
-    _database = null;
+    // SharedPreferences doesn't need to be closed
+    // This method is kept for API compatibility
   }
 }

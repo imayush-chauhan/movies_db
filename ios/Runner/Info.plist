@@ -52,7 +52,7 @@
             <key>CFBundleTypeRole</key>
             <string>Editor</string>
             <key>CFBundleURLName</key>
-            <string>com.example.moviesdb.movies_db</string>
+            <string>com.example.movies_db</string>
             <key>CFBundleURLSchemes</key>
             <array>
                 <string>moviesdb</string>

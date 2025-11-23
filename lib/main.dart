@@ -17,7 +17,7 @@ final deepLinkHandler = DeepLinkHandler();
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await deepLinkHandler.initDeepLinks();
-  await dotenv.load();
+  await dotenv.load(fileName: ".env");
 
   // Set preferred orientations
   await SystemChrome.setPreferredOrientations([

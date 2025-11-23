@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-
 import '../../../../core/constants/api_constants.dart';
 import '../../../../core/models/movie.dart';
 import '../../../../core/navigation/app_router.dart';
