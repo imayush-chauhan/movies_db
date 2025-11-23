@@ -198,7 +198,7 @@ dependencies:
   provider: ^6.1.1          # State management
   dio: ^5.4.0               # HTTP client
   retrofit: ^4.0.3          # Type-safe REST client
-  sqflite: ^2.3.0           # Local database
+  shared_preferences: ^2.5.3       # Local database
   get_it: ^7.6.4            # Dependency injection
   connectivity_plus: ^5.0.2 # Network monitoring
   cached_network_image: ^3.3.0 # Image caching
